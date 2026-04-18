@@ -169,6 +169,71 @@ header.mast::after{
 .caret{display:inline-block;width:2px;height:.9em;background:var(--accent);vertical-align:-2px;margin-left:1px;animation:blink 1.1s steps(2) infinite}
 @keyframes blink{50%{opacity:0}}
 
+/* Replaced-word indicator (from custom-dictionary post-processor). Hover
+   reveals a chevron; click expands to show the original transcription,
+   then click the original to swap it back. */
+.transcript .replaced{
+  position:relative;
+  border-bottom:1px dotted rgba(184,50,27,.4);
+}
+[data-theme="dark"] .transcript .replaced{
+  border-bottom-color:rgba(221,187,136,.5);
+}
+.transcript .replaced .chev{
+  opacity:0;transition:opacity .12s;
+  background:none;border:none;cursor:pointer;
+  font-family:var(--mono);font-size:10px;color:var(--muted);
+  padding:0 3px;vertical-align:middle;line-height:1;
+  margin-left:1px;
+}
+.transcript .replaced:hover .chev,
+.transcript .replaced.expanded .chev{opacity:1}
+.transcript .replaced .chev:hover{color:var(--accent)}
+.transcript .replaced .orig{
+  display:none;
+  font-family:var(--mono);font-size:.78em;
+  color:var(--muted);background:var(--accent-soft);
+  padding:1px 8px;margin:0 4px;
+  cursor:pointer;border-radius:3px;
+  user-select:none;white-space:nowrap;
+}
+.transcript .replaced.expanded .orig{display:inline-block}
+.transcript .replaced .orig:hover{
+  background:var(--accent);color:var(--paper);
+}
+.transcript .replaced .orig::before{
+  content:"heard: ";opacity:.65;font-style:italic;
+}
+
+/* Training modal — used by the "Train" button on each dictionary entry. */
+.train-word{
+  font-family:var(--serif);font-style:italic;font-size:30px;color:var(--ink);
+  padding:10px 16px;background:var(--accent-soft);border:1px solid var(--rule);
+  display:inline-block;margin:6px 0 14px;
+}
+.train-status{
+  font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);margin:6px 0;
+}
+.train-partial{
+  font-family:var(--serif);font-size:17px;color:var(--partial);font-style:italic;
+  min-height:26px;padding:4px 0;
+}
+.train-samples{display:flex;flex-direction:column;gap:6px;margin:8px 0 4px}
+.train-sample{
+  display:flex;gap:10px;align-items:center;padding:8px 12px;
+  background:var(--card-bg);border:1px solid var(--rule);
+  font-family:var(--mono);font-size:12px;color:var(--ink-2);
+}
+.train-sample .n{color:var(--accent);font-weight:500;min-width:18px}
+.train-sample .txt{flex:1}
+.train-sample .rm{
+  background:none;border:none;cursor:pointer;
+  color:var(--muted);font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:2px 6px;
+}
+.train-sample .rm:hover{color:var(--accent)}
+.train-sample.pending{opacity:.5;font-style:italic;color:var(--muted)}
+
 /* Side rail */
 .rail{display:flex;flex-direction:column;gap:20px}
 .card{
@@ -532,6 +597,25 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
 
 <div class="toast" id="toast"></div>
 
+<!-- Training modal — teach the recognizer what it hears when a user says a
+     word in the custom dictionary. Captures up to 3 final recognizer results
+     and saves them as aliases on the entry. -->
+<div class="scrim" id="trainModal" style="display:none">
+  <div class="modal">
+    <div class="small">Training</div>
+    <h2>Teach the recognizer</h2>
+    <p>Say this word aloud — three times. The engine will record what it actually hears and save those transcriptions as aliases, so it can swap them for the correct spelling next time.</p>
+    <div class="train-word" id="trainWord">—</div>
+    <div class="train-status" id="trainStatus">Warming up the mic…</div>
+    <div class="train-partial" id="trainPartial"></div>
+    <div class="train-samples" id="trainSamples"></div>
+    <div class="controls" style="margin-top:18px">
+      <button class="btn primary" id="trainSave" disabled>Save Aliases</button>
+      <button class="btn ghost" id="trainCancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- First-run setup modal -->
 <div class="scrim" id="setupModal" style="display:none">
   <div class="modal">
@@ -635,6 +719,16 @@ const state = {
   partial: '',
   selection: null,      // {start, end} char offsets into transcript, or null
   modelLoaded: false,
+  // Replacement tracking: each time applyCustomDictionary() swaps a recognized
+  // phrase for its canonical form, we keep a record so the user can revert it
+  // from the transcript via the hover-chevron UI. Records are FIFO-matched to
+  // occurrences of canonical in the transcript at render time.
+  replacements: [],     // [{id, canonical, original, addedAt}]
+  _repSeq: 0,
+  // Training flow (dictionary "Train" button). When active, the recognizer's
+  // result/partial handlers route to the training modal instead of the
+  // transcript. prevRunning remembers whether to leave the mic on afterward.
+  training: null,       // { word, samples[], active, prevRunning }
 };
 
 function getBackendLabel(){ return 'Offline (Vosk)'; }
@@ -664,12 +758,30 @@ function getCaretOffset(el){
       if(p.classList && (p.classList.contains('partial') || p.classList.contains('caret'))){
         return state.transcript.length;
       }
+      if(p.classList && (p.classList.contains('chev') || p.classList.contains('orig'))){
+        // Caret is inside a decorative span; approximate to the end of the
+        // enclosing .replaced so downstream setCaretOffset has something sane.
+        const rep = p.closest?.('.replaced');
+        if(rep){
+          const pre = el.ownerDocument.createRange();
+          pre.selectNodeContents(el);
+          pre.setEndAfter(rep);
+          // Strip chev/orig text that sits after rep's text content.
+          return pre.toString().length - (rep.querySelector('.orig')?.textContent.length || 0) - (rep.querySelector('.chev')?.textContent.length || 0);
+        }
+        return state.transcript.length;
+      }
       p = p.parentNode;
     }
+    // Subtract contributions from any chev/orig text that precedes the caret.
     const pre = range.cloneRange();
     pre.selectNodeContents(el);
     pre.setEnd(range.endContainer, range.endOffset);
-    return pre.toString().length;
+    const frag = pre.cloneContents();
+    const tmp = el.ownerDocument.createElement('div');
+    tmp.appendChild(frag);
+    tmp.querySelectorAll('.chev, .orig, .partial, .caret').forEach(n => n.remove());
+    return tmp.textContent.length;
   }catch{ return null; }
 }
 function setCaretOffset(el, offset){
@@ -685,7 +797,12 @@ function setCaretOffset(el, offset){
     while((node = walker.nextNode())){
       let p = node.parentNode, skip = false;
       while(p && p !== el){
-        if(p.classList && (p.classList.contains('partial') || p.classList.contains('caret'))){ skip = true; break; }
+        if(p.classList && (
+          p.classList.contains('partial') ||
+          p.classList.contains('caret') ||
+          p.classList.contains('chev') ||
+          p.classList.contains('orig')
+        )){ skip = true; break; }
         p = p.parentNode;
       }
       if(skip) continue;
@@ -740,7 +857,68 @@ try{
   if(saved) applyTheme(saved);
 }catch{}
 
-/* ---------- Transcript rendering ---------- */
+/* ---------- Transcript rendering ----------
+   The transcript is a plain string in state, but rendered HTML can carry two
+   kinds of inline zones: voice-selection (user's "select last word" etc) and
+   replaced (regions the custom-dictionary post-processor swapped in). Both
+   are overlaid on the escaped transcript in one pass, with overlapping
+   replaced/selection pairs dropped (replacements are small and selections
+   are rare — not worth the nesting gymnastics). */
+
+/* Locate each replacement record in state.transcript, FIFO by canonical, so
+   the Nth record for "Esquivel" maps to the Nth occurrence. Records whose
+   canonical no longer appears (user edited it out) are silently skipped;
+   pruneReplacements() drops them permanently on boundary events. */
+function resolveReplacements(){
+  const text = state.transcript;
+  const lower = text.toLowerCase();
+  const marks = [];
+  const used = new Array(text.length).fill(false);
+  for(const r of state.replacements){
+    const cLow = r.canonical.toLowerCase();
+    if(!cLow) continue;
+    let from = 0;
+    while(from <= text.length){
+      const idx = lower.indexOf(cLow, from);
+      if(idx < 0) break;
+      const end = idx + cLow.length;
+      let overlap = false;
+      for(let i = idx; i < end; i++){ if(used[i]){ overlap = true; break; } }
+      if(!overlap){
+        for(let i = idx; i < end; i++) used[i] = true;
+        marks.push({ id: r.id, start: idx, end, original: r.original, canonical: text.slice(idx, end) });
+        break;
+      }
+      from = idx + 1;
+    }
+  }
+  marks.sort((a,b) => a.start - b.start);
+  return marks;
+}
+
+function pruneReplacements(){
+  const text = state.transcript;
+  const lower = text.toLowerCase();
+  const kept = [];
+  const used = new Array(text.length).fill(false);
+  for(const r of state.replacements){
+    const cLow = r.canonical.toLowerCase();
+    if(!cLow) continue;
+    let from = 0, found = -1;
+    while(from <= text.length){
+      const idx = lower.indexOf(cLow, from);
+      if(idx < 0) break;
+      const end = idx + cLow.length;
+      let overlap = false;
+      for(let i = idx; i < end; i++){ if(used[i]){ overlap = true; break; } }
+      if(!overlap){ found = idx; for(let i = idx; i < end; i++) used[i] = true; break; }
+      from = idx + 1;
+    }
+    if(found >= 0) kept.push(r);
+  }
+  state.replacements = kept;
+}
+
 function renderTranscript(){
   const el = $('#transcript');
   if(!el) return;
@@ -752,21 +930,114 @@ function renderTranscript(){
   // rewrite — otherwise preserve the user's position so mid-text editing works.
   const atEnd = caretOffset !== null && caretOffset >= oldLen;
 
+  const sel = clampSel(state.selection, state.transcript.length);
+  state.selection = sel;
+
+  let reps = resolveReplacements();
+  // Drop replacement marks that would cross the selection boundary — cleanly
+  // nested zones only, since HTML doesn't permit span overlap.
+  if(sel){
+    reps = reps.filter(r =>
+      r.end <= sel.start || r.start >= sel.end ||
+      (r.start >= sel.start && r.end <= sel.end)
+    );
+  }
+
+  const body = buildTranscriptHTML(state.transcript, reps, sel);
   const partial = state.partial ? ` <span class="partial" contenteditable="false">${escapeHTML(state.partial)}</span>` : '';
   const caret = state.running ? '<span class="caret" contenteditable="false"></span>' : '';
-  const s = clampSel(state.selection, state.transcript.length);
-  state.selection = s;
-  const body = s
-    ? escapeHTML(state.transcript.slice(0, s.start))
-      + '<span class="voice-selection">' + escapeHTML(state.transcript.slice(s.start, s.end)) + '</span>'
-      + escapeHTML(state.transcript.slice(s.end))
-    : escapeHTML(state.transcript);
   el.innerHTML = body + partial + caret;
   state._lastRenderedLen = state.transcript.length;
 
   if(active && caretOffset !== null){
     setCaretOffset(el, atEnd ? state.transcript.length : Math.min(caretOffset, state.transcript.length));
   }
+}
+
+function buildTranscriptHTML(text, reps, sel){
+  // Event list sorted by position; at equal positions, closes fire before opens
+  // so adjacent zones don't interleave their tags.
+  const events = [];
+  for(const r of reps){
+    events.push({ pos: r.start, kind: 'rep-open', r });
+    events.push({ pos: r.end, kind: 'rep-close', r });
+  }
+  if(sel){
+    events.push({ pos: sel.start, kind: 'sel-open' });
+    events.push({ pos: sel.end, kind: 'sel-close' });
+  }
+  events.sort((a,b) => {
+    if(a.pos !== b.pos) return a.pos - b.pos;
+    const ac = a.kind.endsWith('close') ? 0 : 1;
+    const bc = b.kind.endsWith('close') ? 0 : 1;
+    return ac - bc;
+  });
+
+  let html = '';
+  let cursor = 0;
+  for(const e of events){
+    if(e.pos > cursor){
+      html += escapeHTML(text.slice(cursor, e.pos));
+      cursor = e.pos;
+    }
+    if(e.kind === 'rep-open'){
+      html += `<span class="replaced" data-rep-id="${e.r.id}">`;
+    } else if(e.kind === 'rep-close'){
+      const origEsc = escapeHTML(e.r.original);
+      html += `<span class="orig" data-rep-id="${e.r.id}" contenteditable="false" title="Click to restore original">${origEsc}</span>`;
+      html += `<button class="chev" data-rep-id="${e.r.id}" contenteditable="false" aria-label="Show original">▸</button>`;
+      html += '</span>';
+    } else if(e.kind === 'sel-open'){
+      html += '<span class="voice-selection">';
+    } else if(e.kind === 'sel-close'){
+      html += '</span>';
+    }
+  }
+  if(cursor < text.length) html += escapeHTML(text.slice(cursor));
+  return html;
+}
+
+/* Click handler: chevron toggles the expanded state; clicking the revealed
+   original swaps it back into the transcript and drops the record. */
+function wireTranscriptClicks(){
+  const el = $('#transcript');
+  if(!el || el._repHandlerWired) return;
+  el._repHandlerWired = true;
+  el.addEventListener('click', (e) => {
+    const chev = e.target.closest('.chev[data-rep-id]');
+    if(chev){
+      e.preventDefault(); e.stopPropagation();
+      const span = chev.closest('.replaced');
+      if(span){
+        const expanding = !span.classList.contains('expanded');
+        span.classList.toggle('expanded');
+        chev.textContent = expanding ? '▾' : '▸';
+      }
+      return;
+    }
+    const orig = e.target.closest('.orig[data-rep-id]');
+    if(orig){
+      e.preventDefault(); e.stopPropagation();
+      revertReplacement(Number(orig.dataset.repId));
+    }
+  });
+}
+
+function revertReplacement(id){
+  const idx = state.replacements.findIndex(r => r.id === id);
+  if(idx < 0) return;
+  const rec = state.replacements[idx];
+  const positions = resolveReplacements();
+  const pos = positions.find(p => p.id === id);
+  // Drop the record regardless — if we can't find it, the user already edited
+  // it out, so we clean up. If we can find it, swap canonical → original.
+  state.replacements.splice(idx, 1);
+  if(pos){
+    state.transcript = state.transcript.slice(0, pos.start) + rec.original + state.transcript.slice(pos.end);
+    state.lastChunk = rec.original;
+  }
+  renderTranscript();
+  autosave();
 }
 function escapeHTML(s){
   return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -798,16 +1069,14 @@ $('#transcript').addEventListener('input', (e)=>{
   const el = $('#transcript');
   state.selection = null;
   const clone = el.cloneNode(true);
-  clone.querySelectorAll('.partial, .caret, .voice-selection').forEach(n => {
-    // Unwrap voice-selection spans so their text stays in the transcript;
-    // remove partial/caret spans entirely.
-    if(n.classList.contains('voice-selection')){
-      const parent = n.parentNode;
-      while(n.firstChild) parent.insertBefore(n.firstChild, n);
-      parent.removeChild(n);
-    } else {
-      n.remove();
-    }
+  // Strip purely decorative spans (chev/orig belong to .replaced; partial/caret
+  // are live-indicators). Then unwrap structural spans so their inner text
+  // flows into the plain transcript string.
+  clone.querySelectorAll('.chev, .orig, .partial, .caret').forEach(n => n.remove());
+  clone.querySelectorAll('.voice-selection, .replaced').forEach(n => {
+    const parent = n.parentNode;
+    while(n.firstChild) parent.insertBefore(n.firstChild, n);
+    parent.removeChild(n);
   });
   let txt = clone.innerText;
   if(txt.includes(';;')){
@@ -1033,7 +1302,7 @@ function commitUtterance(raw){
     else { toast('Nothing to select'); }
   } else if(cmd.kind === 'action'){
     if(cmd.action === 'copy') doCopy();
-    else if(cmd.action === 'clear'){ archiveCurrent(); state.transcript = ''; state.lastChunk = ''; state.selection = null; }
+    else if(cmd.action === 'clear'){ archiveCurrent(); state.transcript = ''; state.lastChunk = ''; state.selection = null; state.replacements = []; }
     else if(cmd.action === 'stop') stopDictation();
     else if(cmd.action === 'deselect'){ clearSelection(); toast('Deselected'); }
     else if(cmd.action === 'copySel'){
@@ -1056,11 +1325,20 @@ function commitUtterance(raw){
     state.lastChunk = toAdd;
     state.selection = null;
   } else if(cmd.kind === 'text'){
-    const corrected = applyCustomDictionary(cmd.text);
-    const cased = applySentenceCase(state.transcript, corrected);
+    const result = applyCustomDictionary(cmd.text);
+    const cased = applySentenceCase(state.transcript, result.text);
     state.transcript = joinWithSpace(state.transcript, cased);
     state.lastChunk = cased;
     state.selection = null;
+    // Record each swap so the user can revert it from the transcript UI.
+    for(const r of result.replacements){
+      state.replacements.push({
+        id: ++state._repSeq,
+        canonical: r.canonical,
+        original: r.original,
+        addedAt: Date.now(),
+      });
+    }
   }
   state.partial = '';
   renderTranscript();
@@ -1071,7 +1349,9 @@ let _saveT;
 function autosave(){
   clearTimeout(_saveT);
   _saveT = setTimeout(()=>{
+    pruneReplacements();
     dbPut('settings', {key:'transcript', value: state.transcript}).catch(()=>{});
+    dbPut('settings', {key:'replacements', value: state.replacements}).catch(()=>{});
   }, 400);
 }
 
@@ -1099,7 +1379,7 @@ async function initAudio(){
     const pct = Math.min(100, Math.floor(rms * 600));
     $('#meter').style.width = pct + '%';
 
-    if(state.recognizer && state.running){
+    if(state.recognizer && (state.running || state.training?.active)){
       try{
         state.recognizer.acceptWaveform(event.inputBuffer);
       }catch(err){
@@ -1191,6 +1471,7 @@ async function rebuildRecognizer(){
     state.recognizer.on('result', (m) => {
       const text = m.result?.text || '';
       if(!text) return;
+      if(state.training?.active){ handleTrainingResult(text); return; }
       commitUtterance(text);
     });
     state.recognizer.on('partialresult', (m) => {
@@ -1198,7 +1479,9 @@ async function rebuildRecognizer(){
       // sweep here (it runs on the final `result` event instead) and coalesce
       // DOM updates to one per animation frame — both keep the main thread free
       // so ScriptProcessorNode can keep feeding audio to the recognizer.
-      state.partial = m.result?.partial || '';
+      const partial = m.result?.partial || '';
+      if(state.training?.active){ updateTrainingPartial(partial); return; }
+      state.partial = partial;
       schedulePartialRender();
     });
   }catch(err){
@@ -1250,32 +1533,75 @@ function levenshtein(a, b){
 }
 
 function applyCustomDictionary(text){
-  if(!text || !state.dictionary.length) return text;
-  const tokens = text.split(/\s+/);
-  // For each dictionary entry, try to match it against a window of tokens.
-  // Match rule: same soundex OR edit-distance <= ceil(len/4).
+  if(!text || !state.dictionary.length) return { text, replacements: [] };
+  let tokens = text.split(/\s+/).filter(Boolean);
+  const replacements = [];
+
+  const normToken = t => t.toLowerCase().replace(/[^a-z0-9]/g,'');
+
   for(const entry of state.dictionary){
-    const target = entry.word;
-    const targetLow = target.toLowerCase();
+    const canonical = entry.word;
+
+    // 1. Alias matching (user-trained). Exact normalized match against a
+    // sliding window — allow edit-distance 1 on the joined string to absorb
+    // one-letter recognizer drift between captures.
+    for(const alias of (entry.aliases || []).filter(Boolean)){
+      const aliasTokens = alias.toLowerCase().split(/\s+/).filter(Boolean);
+      if(!aliasTokens.length) continue;
+      const w = aliasTokens.length;
+      const aliasNorm = aliasTokens.map(normToken).join('');
+      if(!aliasNorm) continue;
+      let i = 0;
+      while(i + w <= tokens.length){
+        const slice = tokens.slice(i, i+w);
+        const sliceNorm = slice.map(normToken).join('');
+        if(!sliceNorm){ i++; continue; }
+        // Exact normalized match, or 1-char drift for longer aliases.
+        const dist = sliceNorm === aliasNorm ? 0 : levenshtein(sliceNorm, aliasNorm);
+        const ok = dist === 0 || (aliasNorm.length >= 6 && dist === 1);
+        if(ok){
+          const original = slice.join(' ');
+          // Skip if the slice is already the canonical form.
+          if(original !== canonical){
+            tokens.splice(i, w, canonical);
+            replacements.push({ canonical, original });
+          }
+          i += 1;
+        } else {
+          i += 1;
+        }
+      }
+    }
+
+    // 2. Soundex / Levenshtein fallback on canonical itself — handles words
+    // without any training samples, same behavior as before.
+    const targetLow = canonical.toLowerCase();
     const targetJoined = targetLow.replace(/\s+/g,'');
+    if(!targetJoined) continue;
     const targetSoundex = soundex(targetJoined);
     const targetWordCount = targetLow.split(/\s+/).length;
-    // Slide window from largest to smallest (prefer multi-word replacements)
     for(let w = Math.min(targetWordCount + 1, 3); w >= 1; w--){
       for(let i = 0; i + w <= tokens.length; i++){
-        const candidate = tokens.slice(i, i+w).join('');
+        const slice = tokens.slice(i, i+w);
+        if(slice.some(t => t === canonical)) continue; // already replaced
+        const candidate = slice.join('');
         if(candidate.length < 2) continue;
         const dist = levenshtein(candidate, targetJoined);
         const threshold = Math.max(1, Math.ceil(targetJoined.length / 4));
         const sameSoundex = soundex(candidate) === targetSoundex;
         if(dist <= threshold && (sameSoundex || dist <= 2)){
-          tokens.splice(i, w, target); // replace window with canonical form
+          const original = slice.join(' ');
+          if(original !== canonical){
+            tokens.splice(i, w, canonical);
+            replacements.push({ canonical, original });
+          }
           break;
         }
       }
     }
   }
-  return tokens.join(' ');
+
+  return { text: tokens.join(' '), replacements };
 }
 
 /* ---------- Start/Stop ---------- */
@@ -1341,7 +1667,7 @@ function doClear(){
   if(!state.transcript) return;
   if(!confirm('Clear the transcript?\n\nThe current text will be saved to the archive below the pad.')) return;
   archiveCurrent();
-  state.transcript = ''; state.partial = ''; state.lastChunk = '';
+  state.transcript = ''; state.partial = ''; state.lastChunk = ''; state.replacements = [];
   renderTranscript(); autosave();
 }
 
@@ -1428,16 +1754,30 @@ async function refreshDict(){
     host.innerHTML = '<div class="empty">No custom words yet. Add proper nouns, acronyms, or jargon above.</div>';
     return;
   }
-  host.innerHTML = state.dictionary.map(w => `
-    <div class="item">
-      <div class="key">${escapeHTML(w.word)}</div>
-      <div class="val">${w.note ? escapeHTML(w.note) : '<em style="color:var(--muted)">custom vocabulary</em>'}</div>
-      <button data-del="${escapeHTML(w.word)}">Remove</button>
-    </div>
-  `).join('');
+  host.innerHTML = state.dictionary.map(w => {
+    const aliases = (w.aliases || []).filter(Boolean);
+    const valHTML = aliases.length
+      ? '<span style="font-family:var(--mono);font-size:11px;color:var(--muted);letter-spacing:.04em">heard as: '
+          + aliases.map(a => `<span style="color:var(--ink-2)">${escapeHTML(a)}</span>`).join(' · ')
+          + '</span>'
+      : '<em style="color:var(--muted);font-size:13px">no training samples — fuzzy match only</em>';
+    return `
+      <div class="item">
+        <div class="key">${escapeHTML(w.word)}</div>
+        <div class="val">${valHTML}</div>
+        <div style="display:flex;gap:4px">
+          <button data-train="${escapeHTML(w.word)}">Train</button>
+          <button data-del="${escapeHTML(w.word)}">Remove</button>
+        </div>
+      </div>
+    `;
+  }).join('');
   host.querySelectorAll('button[data-del]').forEach(b => b.addEventListener('click', async ()=>{
     await dbDel('dictionary', b.dataset.del);
     await refreshDict();
+  }));
+  host.querySelectorAll('button[data-train]').forEach(b => b.addEventListener('click', ()=>{
+    openTrainingModal(b.dataset.train);
   }));
 }
 
@@ -1446,12 +1786,131 @@ $('#dictAdd').addEventListener('click', async ()=>{
   if(!v) return;
   // Split on commas so multiple can be added at once
   for(const w of v.split(/[,;\n]/).map(s=>s.trim()).filter(Boolean)){
-    await dbPut('dictionary', {word: w, added: Date.now()});
+    // Merge with existing entry (preserve aliases) rather than overwriting.
+    const prior = state.dictionary.find(d => d.word === w);
+    await dbPut('dictionary', prior || {word: w, aliases: [], added: Date.now()});
   }
   $('#dictWord').value = '';
   await refreshDict();
   toast('Added');
 });
+
+/* ---------- Training flow ----------
+   The "Train" button on each dictionary entry opens a modal, captures the
+   next N (=3) final recognizer results, and saves whatever Vosk actually
+   transcribed as `aliases` on the entry. applyCustomDictionary() then swaps
+   those aliases for the canonical form on future utterances. This sidesteps
+   English-centric phonetic matching for names Vosk has no chance of spelling
+   correctly (Spanish/Hispanic surnames being the motivating case). */
+async function openTrainingModal(word){
+  if(!state.modelLoaded){
+    toast('Load the speech engine first');
+    $('#setupModal').style.display = 'flex';
+    return;
+  }
+  state.training = {
+    word,
+    samples: [],
+    active: true,
+    prevRunning: state.running,
+  };
+  $('#trainModal').style.display = 'flex';
+  $('#trainWord').textContent = word;
+  $('#trainPartial').textContent = '';
+  $('#trainSave').disabled = true;
+  $('#trainSamples').innerHTML = '';
+  $('#trainStatus').textContent = 'Warming up the mic…';
+
+  try{
+    await initAudio();
+    if(state.audioCtx.state === 'suspended') await state.audioCtx.resume();
+    setMicStatus('Mic live (training)', 'live');
+    updateTrainingUI();
+  }catch(err){
+    console.error(err);
+    toast('Mic access denied');
+    closeTrainingModal();
+  }
+}
+
+function updateTrainingUI(){
+  const t = state.training;
+  if(!t) return;
+  const host = $('#trainSamples');
+  const rows = [];
+  for(let i = 0; i < 3; i++){
+    if(i < t.samples.length){
+      rows.push(`<div class="train-sample"><span class="n">${i+1}.</span><span class="txt">${escapeHTML(t.samples[i])}</span><button class="rm" data-rm="${i}">Redo</button></div>`);
+    } else if(i === t.samples.length){
+      rows.push(`<div class="train-sample pending"><span class="n">${i+1}.</span><span class="txt">listening…</span></div>`);
+    } else {
+      rows.push(`<div class="train-sample pending"><span class="n">${i+1}.</span><span class="txt">waiting</span></div>`);
+    }
+  }
+  host.innerHTML = rows.join('');
+  host.querySelectorAll('button[data-rm]').forEach(b => b.addEventListener('click', ()=>{
+    state.training.samples.splice(Number(b.dataset.rm), 1);
+    updateTrainingUI();
+    const n = state.training.samples.length;
+    $('#trainStatus').textContent = n < 3 ? `Sample ${n+1} of 3 — say the word now.` : 'Three samples captured.';
+    $('#trainSave').disabled = n < 1;
+  }));
+  $('#trainSave').disabled = t.samples.length < 1;
+  if(t.samples.length >= 3){
+    $('#trainStatus').textContent = 'Three samples captured. Save, or redo one to re-record.';
+  } else {
+    $('#trainStatus').textContent = `Sample ${t.samples.length+1} of 3 — say the word now.`;
+  }
+}
+
+function handleTrainingResult(text){
+  const t = state.training;
+  if(!t?.active) return;
+  const clean = text.trim().toLowerCase();
+  if(!clean) return;
+  if(t.samples.length >= 3) return;
+  t.samples.push(clean);
+  $('#trainPartial').textContent = '';
+  updateTrainingUI();
+}
+
+function updateTrainingPartial(partial){
+  if(!state.training?.active) return;
+  $('#trainPartial').textContent = partial;
+}
+
+async function saveTraining(){
+  const t = state.training;
+  if(!t) return;
+  const existing = state.dictionary.find(d => d.word === t.word)
+    || { word: t.word, added: Date.now() };
+  const merged = new Set((existing.aliases || []).map(a => a.toLowerCase()));
+  for(const s of t.samples) if(s) merged.add(s);
+  existing.aliases = [...merged];
+  await dbPut('dictionary', existing);
+  await refreshDict();
+  toast(`Saved ${t.samples.length} alias${t.samples.length===1?'':'es'} for "${t.word}"`);
+  closeTrainingModal();
+}
+
+function closeTrainingModal(){
+  const t = state.training;
+  state.training = null;
+  $('#trainModal').style.display = 'none';
+  $('#trainPartial').textContent = '';
+  $('#trainSamples').innerHTML = '';
+  $('#trainSave').disabled = true;
+  // Restore mic status. If the user wasn't dictating before they opened
+  // training, leave the audio context alive (cheap) but show Mic off.
+  if(t && !t.prevRunning){
+    setMicStatus('Mic off', '');
+  } else if(state.running){
+    setMicStatus('Mic live', 'live');
+  }
+}
+
+$('#trainSave').addEventListener('click', saveTraining);
+$('#trainCancel').addEventListener('click', closeTrainingModal);
 $('#dictWord').addEventListener('keydown', e => { if(e.key==='Enter') $('#dictAdd').click(); });
 $('#dictReload').addEventListener('click', async ()=>{
   await rebuildRecognizer();
@@ -1691,10 +2150,19 @@ $('#btnSkipModel').addEventListener('click', ()=>{ $('#setupModal').style.displa
 
 /* ---------- Boot ---------- */
 (async function boot(){
-  // Restore prior transcript
+  wireTranscriptClicks();
+  // Restore prior transcript + replacement records together so reverts survive
+  // a reload.
   try{
     const prior = await dbGet('settings', 'transcript');
-    if(prior?.value){ state.transcript = prior.value; renderTranscript(); }
+    const priorReps = await dbGet('settings', 'replacements');
+    if(prior?.value) state.transcript = prior.value;
+    if(Array.isArray(priorReps?.value)){
+      state.replacements = priorReps.value;
+      state._repSeq = state.replacements.reduce((m, r) => Math.max(m, r.id || 0), 0);
+    }
+    pruneReplacements();
+    renderTranscript();
   }catch{}
   await refreshDict();
   await refreshMacros();
