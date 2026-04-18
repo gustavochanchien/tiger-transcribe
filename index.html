@@ -254,8 +254,10 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
 .modal h2{font-family:var(--serif);font-style:italic;font-weight:500;font-size:32px;margin:0 0 6px}
 .modal p{font-family:var(--serif);font-size:16px;line-height:1.6;color:var(--ink-2)}
 .modal .small{font-family:var(--mono);font-size:11px;letter-spacing:.1em;color:var(--muted);text-transform:uppercase}
-.progress{height:2px;background:var(--paper-2);margin:20px 0;position:relative;overflow:hidden}
-.progress-fill{height:100%;background:var(--accent);width:0%;transition:width .2s}
+.progress{height:4px;background:var(--paper-2);margin:20px 0;position:relative;overflow:hidden;border-radius:2px}
+.progress-fill{height:100%;background:var(--accent);width:0%;transition:width .3s ease;border-radius:2px;position:relative}
+.progress-fill::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent 0%,rgba(255,255,255,.35) 50%,transparent 100%);background-size:200% 100%;animation:shimmer 1.4s infinite linear}
+@keyframes shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
 
 /* Toast */
 .toast{
@@ -356,7 +358,9 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
   .controls .btn{
     font-size:10px;padding:9px 8px;letter-spacing:.08em;
     flex:1 1 0;justify-content:center;white-space:nowrap;min-width:0;
+    overflow:hidden;text-overflow:ellipsis;
   }
+  .controls .btn .ico{flex-shrink:0}
 }
 </style>
 </head>
@@ -482,11 +486,11 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
       <div class="card">
         <h3>Technical profile</h3>
         <div class="body" style="line-height:1.8">
-          <strong>Engine</strong> — Vosk (Kaldi) compiled to WebAssembly via <code>vosk-browser</code>, with the browser's Web Speech API running in parallel for improved vocabulary coverage.<br>
+          <strong>Engine</strong> — Vosk (Kaldi) compiled to WebAssembly via <code>vosk-browser</code>. Runs entirely in your browser — no audio ever leaves your device.<br>
           <strong>Model</strong> — vosk-model-en-us-0.22-lgraph (≈ 128 MB, cached in IndexedDB after first load).<br>
           <strong>Audio</strong> — Web Audio API + AudioWorklet, resampled to 16 kHz mono.<br>
           <strong>Storage</strong> — IndexedDB for custom dictionary, macros, and transcript autosave.<br>
-          <strong>Privacy</strong> — Vosk runs fully offline. The parallel Web Speech recognizer is on-device in Safari (Apple Speech framework) but streams audio to Google in Chrome. Turn off Wi-Fi to force fully-offline Vosk-only mode. No analytics. No telemetry.
+          <strong>Privacy</strong> — Fully offline after first load. No audio leaves your device. No analytics. No telemetry.
         </div>
       </div>
       <div class="card">
@@ -503,23 +507,6 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
         <h3>First-run note</h3>
         <div class="body">
           The first time you start dictation, the app will download the speech model (~128 MB) and cache it. Subsequent runs work offline. To make fully portable, save this page (<span class="kbd">Ctrl+S</span>) after the model has been cached.
-        </div>
-      </div>
-      <div class="card">
-        <h3>Recognition engine</h3>
-        <div class="body">
-          <p style="margin:0 0 14px 0">
-            By default, the app runs Vosk locally <em>and</em> your browser's Web Speech API in parallel, preferring whichever produces a result for each utterance. Web Speech is on-device in Safari (Apple) but streams audio to the vendor in Chrome (Google) and Edge (Microsoft).
-          </p>
-          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
-            <input type="checkbox" id="chkOfflineMode" style="margin-top:3px">
-            <span>
-              <strong>Offline-only mode</strong>
-              <span style="display:block;color:var(--muted);font-size:13px;margin-top:2px">
-                Disable Web Speech entirely. No audio leaves this device. Vocabulary is limited to what Vosk knows — less accurate for rare words but fully private. Takes effect on the next dictation session.
-              </span>
-            </span>
-          </label>
         </div>
       </div>
       <div class="card">
@@ -567,11 +554,16 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
    Single-file build. Uses vosk-browser (UMD) for in-browser Vosk.
    ========================================================= */
 
-// Self-hosted on GitHub Releases because alphacephei ships .zip but
-// vosk-browser@0.0.8 only accepts .tar.gz. Re-pack via:
-//   unzip vosk-model-en-us-0.22-lgraph.zip && tar -czf out.tar.gz vosk-model-en-us-0.22-lgraph/
-// then `gh release upload models-v1 out.tar.gz`.
-const MODEL_URL = 'https://github.com/gustavochanchien/tiger-transcribe/releases/download/models-v1/vosk-model-en-us-0.22-lgraph.tar.gz';
+// alphacephei ships .zip but vosk-browser@0.0.8 only accepts .tar.gz. Re-pack via:
+//   unzip vosk-model-en-us-0.22-lgraph.zip && tar -czf vosk-model.tar.gz vosk-model-en-us-0.22-lgraph/
+// Then split into <100 MB parts so git will accept them:
+//   split -b 62m vosk-model.tar.gz vosk-model.tar.gz.part-
+// Files are served same-origin via GitHub Pages — no CORS dance.
+const MODEL_CHUNK_URLS = [
+  'models/vosk-model.tar.gz.part-aa',
+  'models/vosk-model.tar.gz.part-ab',
+  'models/vosk-model.tar.gz.part-ac',
+];
 
 /* ---------- Tiny IndexedDB helper (no Dexie) ---------- */
 const DB_NAME = 'tiger-transcribe';
@@ -628,7 +620,6 @@ async function dbGet(store, key){
 }
 
 /* ---------- State ---------- */
-const SR_CTOR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const state = {
   model: null,
   recognizer: null,
@@ -644,41 +635,9 @@ const state = {
   partial: '',
   selection: null,      // {start, end} char offsets into transcript, or null
   modelLoaded: false,
-
-  // Dual-engine transcription: the browser's Web Speech API (webkitSpeechRecognition)
-  // runs alongside Vosk. When healthy it's the authoritative source — Safari uses
-  // Apple's on-device recognizer, Chrome uses Google's cloud. Vosk takes over if
-  // Web Speech is unsupported, errors out, or goes silent for >WEB_SPEECH_STALE_MS.
-  webSpeech: null,
-  webSpeechSupported: !!SR_CTOR,
-  webSpeechHealthy: false,   // flipped on first successful result / reset on error
-  lastWebSpeechAt: 0,
-  recentCommits: [],         // {text, at} dedup window so both engines don't double-commit
-  offlineMode: false,        // when true, suppress Web Speech entirely — Vosk only, no cloud
 };
 
-const WEB_SPEECH_STALE_MS = 3000;
-const COMMIT_DEDUP_MS = 1500;
-
-/* Which backend is the browser's Web Speech API using?
-   There's no programmatic way to ask — we infer from the user agent.
-   Accurate enough for a privacy label. */
-function webSpeechBackend(){
-  const ua = navigator.userAgent;
-  if(/edg\//i.test(ua))                          return 'Microsoft';
-  if(/chrome|chromium|crios/i.test(ua))          return 'Google';
-  if(/safari/i.test(ua))                         return 'Apple';
-  return 'Cloud';
-}
-function getBackendLabel(){
-  if(state.offlineMode || !state.webSpeechSupported) return 'Offline (Vosk)';
-  if(!state.webSpeechHealthy) return 'Offline fallback (Vosk)';
-  const b = webSpeechBackend();
-  if(b === 'Apple')     return 'On-device (Apple)';
-  if(b === 'Google')    return 'Cloud (Google)';
-  if(b === 'Microsoft') return 'Cloud (Microsoft)';
-  return 'Online recognition';
-}
+function getBackendLabel(){ return 'Offline (Vosk)'; }
 
 /* ---------- UI wiring ----------
    When the UI is popped out into a Document Picture-in-Picture window,
@@ -1019,17 +978,9 @@ function joinWithSpace(prev, next){
   return prev + ' ' + next;
 }
 
-function commitUtterance(raw, source){
-  // When both engines happen to emit the same final text within a short window,
-  // keep the first one and drop the duplicate. This covers races near the
-  // Web-Speech-stale boundary where Vosk's result slips through just as Web
-  // Speech also fires for the same utterance.
-  if(isRecentDuplicate(raw)) return;
-
+function commitUtterance(raw){
   const cmd = parseUtterance(raw);
   if(!cmd) return;
-
-  markCommitted(raw);
 
   if(cmd.kind === 'break'){
     state.transcript = state.transcript.trimEnd() + '\n'.repeat(cmd.count);
@@ -1152,77 +1103,6 @@ async function initAudio(){
   mute.connect(state.audioCtx.destination);
 }
 
-/* ---------- Web Speech (parallel recognizer) ----------
-   We run webkitSpeechRecognition alongside Vosk. The browser opens its own
-   independent getUserMedia session internally — no conflict with the Vosk
-   audio pipeline. When Web Speech is producing results it authoritatively
-   drives the transcript; Vosk is suppressed. See commitUtterance()'s dedup
-   for the race where both engines commit the same utterance.              */
-function normalizeForDedup(s){
-  return (s||'').trim().toLowerCase().replace(/[.,!?;:"'`]+$/,'').replace(/\s+/g,' ');
-}
-function isRecentDuplicate(text){
-  const norm = normalizeForDedup(text);
-  if(!norm) return false;
-  const now = Date.now();
-  state.recentCommits = state.recentCommits.filter(c => now - c.at < COMMIT_DEDUP_MS);
-  return state.recentCommits.some(c => c.text === norm);
-}
-function markCommitted(text){
-  const norm = normalizeForDedup(text);
-  if(!norm) return;
-  state.recentCommits.push({text: norm, at: Date.now()});
-}
-
-function initWebSpeech(){
-  if(!state.webSpeechSupported) return null;
-  const rec = new SR_CTOR();
-  rec.continuous = true;
-  rec.interimResults = true;
-  rec.maxAlternatives = 1;
-  rec.lang = 'en-US';
-
-  rec.onresult = (e) => {
-    state.lastWebSpeechAt = Date.now();
-    if(!state.webSpeechHealthy){
-      state.webSpeechHealthy = true;
-      setEngineStatus(getBackendLabel(), 'ready');
-    }
-    // Walk only the new results this event delivered
-    let partial = '';
-    for(let i = e.resultIndex; i < e.results.length; i++){
-      const r = e.results[i];
-      const text = (r[0]?.transcript || '').trim();
-      if(!text) continue;
-      if(r.isFinal){
-        commitUtterance(text, 'webspeech');
-      } else {
-        partial = text;
-      }
-    }
-    if(partial){
-      state.partial = applyCustomDictionary(partial);
-      renderTranscript();
-    }
-  };
-
-  rec.onerror = (e) => {
-    // 'no-speech' / 'aborted' are routine — don't demote health for those
-    if(e.error === 'no-speech' || e.error === 'aborted') return;
-    state.webSpeechHealthy = false;
-    if(state.running) setEngineStatus(getBackendLabel(), 'ready');
-  };
-
-  rec.onend = () => {
-    // Browsers auto-stop Web Speech after ~60s of silence; restart to stay continuous
-    if(state.running && state.webSpeechSupported){
-      try { rec.start(); } catch {}
-    }
-  };
-
-  return rec;
-}
-
 /* ---------- Recognizer ---------- */
 async function loadModel(onProgress){
   if(state.modelLoaded) return;
@@ -1230,13 +1110,46 @@ async function loadModel(onProgress){
     throw new Error('Vosk library failed to load. You need an internet connection for the very first run.');
   }
   setEngineStatus('Downloading model…', '');
-  onProgress?.(10, 'Contacting model server…');
+  onProgress?.(2, 'Connecting…');
   try{
-    // createModel streams/untars the .tar.gz model inside a Web Worker and persists it
-    // to the browser's virtual filesystem (IndexedDB-backed). Subsequent calls hit cache.
-    onProgress?.(30, 'Downloading ~128 MB model (one-time)…');
-    state.model = await Vosk.createModel(MODEL_URL);
-    onProgress?.(90, 'Initializing recognizer…');
+    // Fetch each split part in parallel, stream byte progress, then concatenate
+    // into one Blob URL for Vosk. Vosk has no progress callback of its own.
+    const responses = await Promise.all(MODEL_CHUNK_URLS.map(u => fetch(u)));
+    responses.forEach((r, i) => {
+      if(!r.ok) throw new Error(`HTTP ${r.status} fetching ${MODEL_CHUNK_URLS[i]}`);
+    });
+
+    const total = responses.reduce((s, r) => s + (Number(r.headers.get('content-length')) || 0), 0);
+    const totalMB = total ? (total / 1048576).toFixed(0) : '~124';
+    const partBuffers = responses.map(() => []);
+    let received = 0;
+
+    await Promise.all(responses.map(async (resp, i) => {
+      if(!resp.body){
+        const buf = await resp.arrayBuffer();
+        partBuffers[i].push(new Uint8Array(buf));
+        received += buf.byteLength;
+        return;
+      }
+      const reader = resp.body.getReader();
+      while(true){
+        const {done, value} = await reader.read();
+        if(done) break;
+        partBuffers[i].push(value);
+        received += value.length;
+        const pct = total ? Math.round(5 + (received / total) * 73) : 30;
+        const mb = (received / 1048576).toFixed(1);
+        onProgress?.(pct, `Downloading… ${mb} / ${totalMB} MB`);
+      }
+    }));
+
+    const modelUrl = URL.createObjectURL(new Blob(partBuffers.flat()));
+
+    onProgress?.(80, 'Decompressing and caching…');
+    state.model = await Vosk.createModel(modelUrl);
+    URL.revokeObjectURL(modelUrl);
+
+    onProgress?.(93, 'Initializing recognizer…');
     state.modelLoaded = true;
     setEngineStatus('Engine ready', 'ready');
     await rebuildRecognizer();
@@ -1270,17 +1183,10 @@ async function rebuildRecognizer(){
     state.recognizer.on('result', (m) => {
       const text = m.result?.text || '';
       if(!text) return;
-      // Suppress Vosk when Web Speech is actively producing results.
-      // Fall through to commit only when Web Speech is unhealthy or has gone stale.
-      const webSpeechStale = Date.now() - state.lastWebSpeechAt > WEB_SPEECH_STALE_MS;
-      if(state.webSpeechHealthy && !webSpeechStale) return;
-      commitUtterance(text, 'vosk');
+      commitUtterance(text);
     });
     state.recognizer.on('partialresult', (m) => {
       const text = m.result?.partial || '';
-      // Same gating as finals — let Web Speech drive the partial display when it's healthy
-      const webSpeechStale = Date.now() - state.lastWebSpeechAt > WEB_SPEECH_STALE_MS;
-      if(state.webSpeechHealthy && !webSpeechStale) return;
       state.partial = applyCustomDictionary(text);
       renderTranscript();
     });
@@ -1377,25 +1283,6 @@ async function startDictation(){
     $('#btnStart').disabled = true;
     $('#btnStop').disabled = false;
 
-    // Kick off the parallel Web Speech recognizer unless the user has opted into
-    // offline-only mode (no cloud). Mark healthy optimistically so Vosk stays
-    // suppressed during the ~1s warm-up; if Web Speech never produces a result
-    // within WEB_SPEECH_STALE_MS, staleness flips Vosk back on. onerror will
-    // demote healthy=false early if the engine fails outright.
-    state.recentCommits = [];
-    if(state.webSpeechSupported && !state.offlineMode){
-      state.webSpeechHealthy = true;
-      state.lastWebSpeechAt = Date.now();
-      state.webSpeech = state.webSpeech || initWebSpeech();
-      try { state.webSpeech.start(); } catch(err){
-        // InvalidStateError happens if .start() is called while already running
-        // (e.g. after an onend auto-restart). Safe to ignore.
-        if(err?.name !== 'InvalidStateError') console.warn('webSpeech.start()', err);
-      }
-    } else {
-      state.webSpeechHealthy = false;
-      state.lastWebSpeechAt = 0;
-    }
     setEngineStatus(getBackendLabel(), 'ready');
 
     renderTranscript();
@@ -1422,11 +1309,6 @@ function stopDictation(){
       state.recognizer.retrieveFinalResult?.();
     }catch{}
   }
-  // Stop Web Speech. onend fires but won't restart because state.running is false.
-  if(state.webSpeech){
-    try { state.webSpeech.stop(); } catch {}
-  }
-  state.webSpeechHealthy = false;
   state.partial = '';
   renderTranscript();
 }
@@ -1620,27 +1502,6 @@ $('#btnClear').addEventListener('click', doClear);
 $('#btnDownload').addEventListener('click', doDownload);
 $('#btnClearAll').addEventListener('click', clearAllData);
 
-$('#chkOfflineMode').addEventListener('change', async (e) => {
-  state.offlineMode = !!e.target.checked;
-  try { await dbPut('settings', {key:'offlineMode', value: state.offlineMode}); } catch {}
-  // Apply immediately. If dictation is running, stop/start Web Speech to match.
-  if(state.running){
-    if(state.offlineMode && state.webSpeech){
-      try { state.webSpeech.stop(); } catch {}
-      state.webSpeechHealthy = false;
-    } else if(!state.offlineMode && state.webSpeechSupported){
-      state.webSpeech = state.webSpeech || initWebSpeech();
-      state.webSpeechHealthy = true;
-      state.lastWebSpeechAt = Date.now();
-      try { state.webSpeech.start(); } catch(err){
-        if(err?.name !== 'InvalidStateError') console.warn('webSpeech.start()', err);
-      }
-    }
-    setEngineStatus(getBackendLabel(), 'ready');
-  }
-  toast(state.offlineMode ? 'Offline-only mode enabled' : 'Dual-engine mode enabled');
-});
-
 /* ---------- Reset / clear all local data ---------- */
 async function clearAllData(){
   const ok = confirm(
@@ -1823,13 +1684,6 @@ $('#btnSkipModel').addEventListener('click', ()=>{ $('#setupModal').style.displa
   try{
     const prior = await dbGet('settings', 'transcript');
     if(prior?.value){ state.transcript = prior.value; renderTranscript(); }
-  }catch{}
-  // Restore offline-mode preference
-  try{
-    const om = await dbGet('settings', 'offlineMode');
-    state.offlineMode = !!om?.value;
-    const chk = $('#chkOfflineMode');
-    if(chk) chk.checked = state.offlineMode;
   }catch{}
   await refreshDict();
   await refreshMacros();

@@ -1,7 +1,7 @@
 CLAUDE.md
 .DS_Store
 
-# Vosk models are large and live in GitHub Releases, not git
+# Don't commit the unpacked model or the full tar.gz — only the split parts under models/
 vosk-model-*/
-vosk-model-*.tar.gz
 vosk-model-*.zip
+models/vosk-model.tar.gz
