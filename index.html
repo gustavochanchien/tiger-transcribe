@@ -153,6 +153,15 @@ header.mast::after{
   padding-left:22px;
 }
 .transcript .partial{color:var(--partial);font-style:italic}
+.transcript .voice-selection{
+  background:rgba(255,213,79,.55);
+  border-radius:2px;
+  box-shadow:0 0 0 1px rgba(255,193,7,.4);
+}
+[data-theme="dark"] .transcript .voice-selection{
+  background:rgba(88,166,255,.35);
+  box-shadow:0 0 0 1px rgba(88,166,255,.55);
+}
 .transcript:empty::before{
   content:"Press Start, then begin speaking. Your words will appear here in real time.";
   color:var(--muted);font-style:italic;
@@ -401,6 +410,11 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
             <li><span class="phrase">insert date</span><span class="desc">today's date</span></li>
             <li><span class="phrase">copy to clipboard</span><span class="desc">action</span></li>
             <li><span class="phrase">scratch all</span><span class="desc">clear pad</span></li>
+            <li><span class="phrase">select last word / sentence / paragraph</span><span class="desc">highlight</span></li>
+            <li><span class="phrase">select last N words</span><span class="desc">e.g. "three"</span></li>
+            <li><span class="phrase">select all / select that</span><span class="desc">highlight</span></li>
+            <li><span class="phrase">copy / cut / delete</span><span class="desc">act on selection</span></li>
+            <li><span class="phrase">accept</span><span class="desc">deselect</span></li>
           </ul>
         </div>
         <div class="card">
@@ -468,31 +482,50 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
       <div class="card">
         <h3>Technical profile</h3>
         <div class="body" style="line-height:1.8">
-          <strong>Engine</strong> — Vosk (Kaldi) compiled to WebAssembly via <code>vosk-browser</code>.<br>
-          <strong>Model</strong> — vosk-model-small-en-us-0.15 (≈ 40 MB, cached in IndexedDB after first load).<br>
+          <strong>Engine</strong> — Vosk (Kaldi) compiled to WebAssembly via <code>vosk-browser</code>, with the browser's Web Speech API running in parallel for improved vocabulary coverage.<br>
+          <strong>Model</strong> — vosk-model-en-us-0.22-lgraph (≈ 128 MB, cached in IndexedDB after first load).<br>
           <strong>Audio</strong> — Web Audio API + AudioWorklet, resampled to 16 kHz mono.<br>
           <strong>Storage</strong> — IndexedDB for custom dictionary, macros, and transcript autosave.<br>
-          <strong>Privacy</strong> — Zero network calls during dictation. No analytics. No telemetry.
+          <strong>Privacy</strong> — Vosk runs fully offline. The parallel Web Speech recognizer is on-device in Safari (Apple Speech framework) but streams audio to Google in Chrome. Turn off Wi-Fi to force fully-offline Vosk-only mode. No analytics. No telemetry.
         </div>
       </div>
       <div class="card">
         <h3>Keyboard shortcuts</h3>
         <div class="body">
-          <span class="kbd">Space</span> (when pad is unfocused) — Start/Stop &nbsp;·&nbsp;
-          <span class="kbd">Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">C</span> — Copy all &nbsp;·&nbsp;
+          <span class="kbd">⌘/Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">M</span> — Toggle mic (works anywhere) &nbsp;·&nbsp;
+          <span class="kbd">Esc</span> — Stop dictation &nbsp;·&nbsp;
+          <span class="kbd">Space</span> (pad unfocused) — Start/Stop &nbsp;·&nbsp;
+          <span class="kbd">⌘/Ctrl</span>+<span class="kbd">Shift</span>+<span class="kbd">C</span> — Copy all &nbsp;·&nbsp;
           <span class="kbd">;;</span> — Insert today's date
         </div>
       </div>
       <div class="card">
         <h3>First-run note</h3>
         <div class="body">
-          The first time you start dictation, the app will download the speech model (~40 MB) and cache it. Subsequent runs work offline. To make fully portable, save this page (<span class="kbd">Ctrl+S</span>) after the model has been cached.
+          The first time you start dictation, the app will download the speech model (~128 MB) and cache it. Subsequent runs work offline. To make fully portable, save this page (<span class="kbd">Ctrl+S</span>) after the model has been cached.
+        </div>
+      </div>
+      <div class="card">
+        <h3>Recognition engine</h3>
+        <div class="body">
+          <p style="margin:0 0 14px 0">
+            By default, the app runs Vosk locally <em>and</em> your browser's Web Speech API in parallel, preferring whichever produces a result for each utterance. Web Speech is on-device in Safari (Apple) but streams audio to the vendor in Chrome (Google) and Edge (Microsoft).
+          </p>
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer">
+            <input type="checkbox" id="chkOfflineMode" style="margin-top:3px">
+            <span>
+              <strong>Offline-only mode</strong>
+              <span style="display:block;color:var(--muted);font-size:13px;margin-top:2px">
+                Disable Web Speech entirely. No audio leaves this device. Vocabulary is limited to what Vosk knows — less accurate for rare words but fully private. Takes effect on the next dictation session.
+              </span>
+            </span>
+          </label>
         </div>
       </div>
       <div class="card">
         <h3>Reset &amp; troubleshooting</h3>
         <div class="body">
-          If recognition is misbehaving or you want to start fresh, you can wipe all local data — custom dictionary, macros, saved transcript, and the cached ~40 MB speech model. The page will reload afterward and the model will re-download on next dictation.
+          If recognition is misbehaving or you want to start fresh, you can wipe all local data — custom dictionary, macros, saved transcript, and the cached ~128 MB speech model. The page will reload afterward and the model will re-download on next dictation.
         </div>
         <div class="controls" style="margin-top:14px">
           <button class="btn danger" id="btnClearAll">Clear All Data &amp; Cache</button>
@@ -517,7 +550,7 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
   <div class="modal">
     <div class="small">First-run setup</div>
     <h2>Load the speech engine</h2>
-    <p>To enable offline dictation, Tiger Transcribe needs to download the Vosk English model (≈ 40 MB). This happens once. The model is cached in your browser — after this, the app works with no internet connection.</p>
+    <p>To enable offline dictation, Tiger Transcribe needs to download the Vosk English model (≈ 128 MB). This happens once. The model is cached in your browser — after this, the app works with no internet connection.</p>
     <div class="progress"><div class="progress-fill" id="loadProgress"></div></div>
     <div class="small" id="loadStatus" style="margin-top:8px">Ready to download.</div>
     <div class="controls" style="margin-top:24px">
@@ -534,7 +567,11 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
    Single-file build. Uses vosk-browser (UMD) for in-browser Vosk.
    ========================================================= */
 
-const MODEL_URL = 'https://ccoreilly.github.io/vosk-browser/models/vosk-model-small-en-us-0.15.tar.gz';
+// Self-hosted on GitHub Releases because alphacephei ships .zip but
+// vosk-browser@0.0.8 only accepts .tar.gz. Re-pack via:
+//   unzip vosk-model-en-us-0.22-lgraph.zip && tar -czf out.tar.gz vosk-model-en-us-0.22-lgraph/
+// then `gh release upload models-v1 out.tar.gz`.
+const MODEL_URL = 'https://github.com/gustavochanchien/tiger-transcribe/releases/download/models-v1/vosk-model-en-us-0.22-lgraph.tar.gz';
 
 /* ---------- Tiny IndexedDB helper (no Dexie) ---------- */
 const DB_NAME = 'tiger-transcribe';
@@ -591,6 +628,7 @@ async function dbGet(store, key){
 }
 
 /* ---------- State ---------- */
+const SR_CTOR = window.SpeechRecognition || window.webkitSpeechRecognition;
 const state = {
   model: null,
   recognizer: null,
@@ -604,8 +642,43 @@ const state = {
   transcript: '',       // committed final text (with formatting)
   lastChunk: '',        // last committed chunk (for "delete that")
   partial: '',
+  selection: null,      // {start, end} char offsets into transcript, or null
   modelLoaded: false,
+
+  // Dual-engine transcription: the browser's Web Speech API (webkitSpeechRecognition)
+  // runs alongside Vosk. When healthy it's the authoritative source — Safari uses
+  // Apple's on-device recognizer, Chrome uses Google's cloud. Vosk takes over if
+  // Web Speech is unsupported, errors out, or goes silent for >WEB_SPEECH_STALE_MS.
+  webSpeech: null,
+  webSpeechSupported: !!SR_CTOR,
+  webSpeechHealthy: false,   // flipped on first successful result / reset on error
+  lastWebSpeechAt: 0,
+  recentCommits: [],         // {text, at} dedup window so both engines don't double-commit
+  offlineMode: false,        // when true, suppress Web Speech entirely — Vosk only, no cloud
 };
+
+const WEB_SPEECH_STALE_MS = 3000;
+const COMMIT_DEDUP_MS = 1500;
+
+/* Which backend is the browser's Web Speech API using?
+   There's no programmatic way to ask — we infer from the user agent.
+   Accurate enough for a privacy label. */
+function webSpeechBackend(){
+  const ua = navigator.userAgent;
+  if(/edg\//i.test(ua))                          return 'Microsoft';
+  if(/chrome|chromium|crios/i.test(ua))          return 'Google';
+  if(/safari/i.test(ua))                         return 'Apple';
+  return 'Cloud';
+}
+function getBackendLabel(){
+  if(state.offlineMode || !state.webSpeechSupported) return 'Offline (Vosk)';
+  if(!state.webSpeechHealthy) return 'Offline fallback (Vosk)';
+  const b = webSpeechBackend();
+  if(b === 'Apple')     return 'On-device (Apple)';
+  if(b === 'Google')    return 'Cloud (Google)';
+  if(b === 'Microsoft') return 'Cloud (Microsoft)';
+  return 'Online recognition';
+}
 
 /* ---------- UI wiring ----------
    When the UI is popped out into a Document Picture-in-Picture window,
@@ -617,6 +690,61 @@ const $$ = sel => {
   const main = document.querySelectorAll(sel);
   return main.length || !window._altDoc ? main : window._altDoc.querySelectorAll(sel);
 };
+
+/* Cursor preservation helpers for the contenteditable pad. The partial and
+   caret spans at the end of the transcript are skipped when computing /
+   restoring the caret's character offset so user edits survive live re-renders. */
+function getCaretOffset(el){
+  try{
+    const sel = el.ownerDocument.defaultView.getSelection();
+    if(!sel || !sel.rangeCount) return null;
+    const range = sel.getRangeAt(0);
+    if(!el.contains(range.endContainer)) return null;
+    let p = range.endContainer;
+    while(p && p !== el){
+      if(p.classList && (p.classList.contains('partial') || p.classList.contains('caret'))){
+        return state.transcript.length;
+      }
+      p = p.parentNode;
+    }
+    const pre = range.cloneRange();
+    pre.selectNodeContents(el);
+    pre.setEnd(range.endContainer, range.endOffset);
+    return pre.toString().length;
+  }catch{ return null; }
+}
+function setCaretOffset(el, offset){
+  try{
+    const doc = el.ownerDocument;
+    const sel = doc.defaultView.getSelection();
+    const range = doc.createRange();
+    offset = Math.max(0, offset);
+    const walker = doc.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    let remaining = offset;
+    let lastValid = null;
+    let node;
+    while((node = walker.nextNode())){
+      let p = node.parentNode, skip = false;
+      while(p && p !== el){
+        if(p.classList && (p.classList.contains('partial') || p.classList.contains('caret'))){ skip = true; break; }
+        p = p.parentNode;
+      }
+      if(skip) continue;
+      lastValid = node;
+      if(remaining <= node.data.length){
+        range.setStart(node, remaining);
+        range.collapse(true);
+        sel.removeAllRanges(); sel.addRange(range);
+        return;
+      }
+      remaining -= node.data.length;
+    }
+    if(lastValid) range.setStart(lastValid, lastValid.data.length);
+    else range.setStart(el, 0);
+    range.collapse(true);
+    sel.removeAllRanges(); sel.addRange(range);
+  }catch{}
+}
 
 function toast(msg, ms=1800){
   const t = $('#toast'); t.textContent = msg; t.classList.add('show');
@@ -656,11 +784,30 @@ try{
 /* ---------- Transcript rendering ---------- */
 function renderTranscript(){
   const el = $('#transcript');
-  // We manage the DOM carefully to avoid losing the user's cursor when they edit manually.
-  // Final text goes in a span, partial in another, plus a caret when live.
-  const partial = state.partial ? ` <span class="partial">${escapeHTML(state.partial)}</span>` : '';
-  const caret = state.running ? '<span class="caret"></span>' : '';
-  el.innerHTML = escapeHTML(state.transcript) + partial + caret;
+  if(!el) return;
+  const doc = el.ownerDocument;
+  const active = doc.activeElement === el;
+  const oldLen = state._lastRenderedLen ?? 0;
+  const caretOffset = active ? getCaretOffset(el) : null;
+  // If the caret was at or past the previous end, follow the new end after we
+  // rewrite — otherwise preserve the user's position so mid-text editing works.
+  const atEnd = caretOffset !== null && caretOffset >= oldLen;
+
+  const partial = state.partial ? ` <span class="partial" contenteditable="false">${escapeHTML(state.partial)}</span>` : '';
+  const caret = state.running ? '<span class="caret" contenteditable="false"></span>' : '';
+  const s = clampSel(state.selection, state.transcript.length);
+  state.selection = s;
+  const body = s
+    ? escapeHTML(state.transcript.slice(0, s.start))
+      + '<span class="voice-selection">' + escapeHTML(state.transcript.slice(s.start, s.end)) + '</span>'
+      + escapeHTML(state.transcript.slice(s.end))
+    : escapeHTML(state.transcript);
+  el.innerHTML = body + partial + caret;
+  state._lastRenderedLen = state.transcript.length;
+
+  if(active && caretOffset !== null){
+    setCaretOffset(el, atEnd ? state.transcript.length : Math.min(caretOffset, state.transcript.length));
+  }
 }
 function escapeHTML(s){
   return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
@@ -673,27 +820,40 @@ function formatDate(d = new Date()){
   return `${mm}/${dd}/${d.getFullYear()}`;
 }
 
-/* Allow manual editing: when user types, update state.transcript from DOM.
-   Also: typing ";;" expands to today's date. */
+/* Allow manual editing — including backspace/typing during live dictation.
+   We read the DOM but strip the live partial/caret spans so they don't leak
+   into state.transcript. Typing ";;" expands to today's date. */
 $('#transcript').addEventListener('input', (e)=>{
-  if(state.running) return; // don't let user edits clash with live partial
-  let txt = $('#transcript').innerText;
+  const el = $('#transcript');
+  state.selection = null;
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll('.partial, .caret, .voice-selection').forEach(n => {
+    // Unwrap voice-selection spans so their text stays in the transcript;
+    // remove partial/caret spans entirely.
+    if(n.classList.contains('voice-selection')){
+      const parent = n.parentNode;
+      while(n.firstChild) parent.insertBefore(n.firstChild, n);
+      parent.removeChild(n);
+    } else {
+      n.remove();
+    }
+  });
+  let txt = clone.innerText;
   if(txt.includes(';;')){
     txt = txt.split(';;').join(formatDate());
     state.transcript = txt;
     renderTranscript();
-    // Re-render wipes the DOM, so restore a cursor at the end of the text.
-    const el = $('#transcript');
-    const range = document.createRange();
-    range.selectNodeContents(el);
-    range.collapse(false);
-    const sel = window.getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
+    setCaretOffset(el, state.transcript.length);
     autosave();
     return;
   }
   state.transcript = txt;
+  autosave();
+});
+$('#transcript').addEventListener('mousedown', ()=>{ if(state.selection) clearSelection(); });
+$('#transcript').addEventListener('keydown', (e)=>{
+  // Clear on caret-moving keys; let input handler handle typing/backspace.
+  if(state.selection && /^(Arrow|Home|End|PageUp|PageDown)/.test(e.key)) clearSelection();
 });
 
 /* ---------- Post-processing (capitalization & command parsing) ---------- */
@@ -708,9 +868,88 @@ const PUNCT_MAP = {
   'dash':' — ', 'hyphen':'-',
 };
 
+/* ---------- Voice-driven selection helpers ----------
+   Selection is tracked as {start,end} char offsets into state.transcript,
+   rendered as a <span class="voice-selection"> overlay in renderTranscript
+   so it survives the innerHTML rewrites that happen on every partial. */
+const NUM_WORDS = {zero:0,one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,
+  ten:10,eleven:11,twelve:12,thirteen:13,fourteen:14,fifteen:15,sixteen:16,seventeen:17,
+  eighteen:18,nineteen:19,twenty:20};
+function parseNumberWord(w){
+  if(/^\d+$/.test(w)) return parseInt(w,10);
+  return NUM_WORDS[w] ?? NaN;
+}
+function findLastWords(text, n){
+  const t = text.replace(/\s+$/,'');
+  if(!t || n <= 0) return null;
+  const idx = [];
+  const re = /\S+/g;
+  let m;
+  while((m = re.exec(t))) idx.push([m.index, m.index + m[0].length]);
+  if(!idx.length) return null;
+  const take = idx.slice(-Math.min(n, idx.length));
+  return {start: take[0][0], end: take[take.length - 1][1]};
+}
+function findLastSentence(text){
+  const t = text.replace(/\s+$/,'');
+  if(!t) return null;
+  // Skip trailing terminators belonging to the final sentence, then hunt for the previous one.
+  let i = t.length;
+  while(i > 0 && /[.!?]/.test(t[i - 1])) i--;
+  const body = t.slice(0, i);
+  const lastTerm = Math.max(body.lastIndexOf('.'), body.lastIndexOf('!'), body.lastIndexOf('?'));
+  let start = lastTerm < 0 ? 0 : lastTerm + 1;
+  while(start < t.length && /\s/.test(t[start])) start++;
+  return {start, end: t.length};
+}
+function findLastParagraph(text){
+  const t = text.replace(/\s+$/,'');
+  if(!t) return null;
+  const i = t.lastIndexOf('\n\n');
+  return {start: i < 0 ? 0 : i + 2, end: t.length};
+}
+function clampSel(sel, len){
+  if(!sel) return null;
+  const s = Math.max(0, Math.min(sel.start, len));
+  const e = Math.max(s, Math.min(sel.end, len));
+  return e > s ? {start: s, end: e} : null;
+}
+function applySelection(sel){
+  state.selection = clampSel(sel, state.transcript.length);
+  renderTranscript();
+}
+function clearSelection(){
+  if(state.selection){ state.selection = null; renderTranscript(); }
+}
+function getSelectedText(){
+  const s = state.selection;
+  return s ? state.transcript.slice(s.start, s.end) : '';
+}
+function deleteSelection(){
+  const s = state.selection;
+  if(!s) return false;
+  state.transcript = state.transcript.slice(0, s.start) + state.transcript.slice(s.end);
+  state.lastChunk = '';
+  state.selection = null;
+  return true;
+}
+async function copyText(txt, label){
+  try{
+    await navigator.clipboard.writeText(txt);
+    toast(label || 'Copied');
+  }catch{
+    const ta = document.createElement('textarea');
+    ta.value = txt; document.body.appendChild(ta); ta.select();
+    document.execCommand('copy'); document.body.removeChild(ta);
+    toast((label || 'Copied') + ' (fallback)');
+  }
+}
+
 // Returns {kind, data}: 'text', 'break', 'action'
 function parseUtterance(raw){
-  const text = raw.trim().toLowerCase();
+  // Strip trailing punctuation so Web Speech's "Stop dictation." matches the
+  // same command matchers as Vosk's raw "stop dictation".
+  const text = raw.trim().toLowerCase().replace(/[.,!?;:]+$/,'');
   if(!text) return null;
 
   // 1. Exact-match user macros first
@@ -726,6 +965,24 @@ function parseUtterance(raw){
   if(text === 'copy to clipboard' || text === 'copy all') return {kind:'action', action:'copy'};
   if(text === 'scratch all' || text === 'clear pad') return {kind:'action', action:'clear'};
   if(text === 'stop listening' || text === 'stop dictation') return {kind:'action', action:'stop'};
+
+  // Selection commands (select → act workflow)
+  if(text === 'select all')            return {kind:'select', target:'all'};
+  if(text === 'select that')           return {kind:'select', target:'that'};
+  if(text === 'select last word')      return {kind:'select', target:'words', n:1};
+  if(text === 'select last sentence')  return {kind:'select', target:'sentence'};
+  if(text === 'select last paragraph') return {kind:'select', target:'paragraph'};
+  const mSel = text.match(/^select last (\S+) words?$/);
+  if(mSel){
+    const n = parseNumberWord(mSel[1]);
+    if(!isNaN(n) && n > 0) return {kind:'select', target:'words', n};
+  }
+
+  // Selection-aware actions
+  if(text === 'deselect' || text === 'accept') return {kind:'action', action:'deselect'};
+  if(text === 'cut')                           return {kind:'action', action:'cut'};
+  if(text === 'copy' || text === 'copy that')  return {kind:'action', action:'copySel'};
+  if(text === 'delete')                        return {kind:'action', action:'deleteSel'};
 
   // 3. Otherwise, treat as text with inline punctuation substitution
   let out = raw;
@@ -762,9 +1019,17 @@ function joinWithSpace(prev, next){
   return prev + ' ' + next;
 }
 
-function commitUtterance(raw){
+function commitUtterance(raw, source){
+  // When both engines happen to emit the same final text within a short window,
+  // keep the first one and drop the duplicate. This covers races near the
+  // Web-Speech-stale boundary where Vosk's result slips through just as Web
+  // Speech also fires for the same utterance.
+  if(isRecentDuplicate(raw)) return;
+
   const cmd = parseUtterance(raw);
   if(!cmd) return;
+
+  markCommitted(raw);
 
   if(cmd.kind === 'break'){
     state.transcript = state.transcript.trimEnd() + '\n'.repeat(cmd.count);
@@ -773,7 +1038,9 @@ function commitUtterance(raw){
     state.transcript = state.transcript.replace(/\s*\S+\s*$/, '');
     state.lastChunk = '';
   } else if(cmd.kind === 'deleteChunk'){
-    if(state.lastChunk){
+    if(state.selection){
+      deleteSelection();
+    } else if(state.lastChunk){
       state.transcript = state.transcript.slice(0, state.transcript.length - state.lastChunk.length);
       state.lastChunk = '';
     }
@@ -781,19 +1048,56 @@ function commitUtterance(raw){
     const date = formatDate();
     state.transcript = joinWithSpace(state.transcript, date);
     state.lastChunk = date;
+    state.selection = null;
+  } else if(cmd.kind === 'select'){
+    const T = state.transcript;
+    let sel = null;
+    if(cmd.target === 'all'){
+      sel = T.length ? {start: 0, end: T.length} : null;
+    } else if(cmd.target === 'that'){
+      if(state.lastChunk && state.lastChunk.trim()){
+        const idx = T.lastIndexOf(state.lastChunk);
+        if(idx >= 0) sel = {start: idx, end: idx + state.lastChunk.length};
+      }
+    } else if(cmd.target === 'words'){
+      sel = findLastWords(T, cmd.n);
+    } else if(cmd.target === 'sentence'){
+      sel = findLastSentence(T);
+    } else if(cmd.target === 'paragraph'){
+      sel = findLastParagraph(T);
+    }
+    if(sel){ applySelection(sel); toast('Selected'); }
+    else { toast('Nothing to select'); }
   } else if(cmd.kind === 'action'){
     if(cmd.action === 'copy') doCopy();
-    else if(cmd.action === 'clear'){ archiveCurrent(); state.transcript = ''; state.lastChunk = ''; }
+    else if(cmd.action === 'clear'){ archiveCurrent(); state.transcript = ''; state.lastChunk = ''; state.selection = null; }
     else if(cmd.action === 'stop') stopDictation();
+    else if(cmd.action === 'deselect'){ clearSelection(); toast('Deselected'); }
+    else if(cmd.action === 'copySel'){
+      const txt = getSelectedText() || state.transcript;
+      if(txt) copyText(txt, state.selection ? 'Copied selection' : 'Copied to clipboard');
+      else toast('Nothing to copy');
+    }
+    else if(cmd.action === 'deleteSel'){
+      if(deleteSelection()) toast('Deleted selection');
+      else toast('No selection');
+    }
+    else if(cmd.action === 'cut'){
+      const txt = getSelectedText();
+      if(txt){ copyText(txt, 'Cut'); deleteSelection(); }
+      else toast('No selection');
+    }
   } else if(cmd.kind === 'macro'){
     const toAdd = cmd.text;
     state.transcript = joinWithSpace(state.transcript, toAdd);
     state.lastChunk = toAdd;
+    state.selection = null;
   } else if(cmd.kind === 'text'){
     const corrected = applyCustomDictionary(cmd.text);
     const cased = applySentenceCase(state.transcript, corrected);
     state.transcript = joinWithSpace(state.transcript, cased);
     state.lastChunk = cased;
+    state.selection = null;
   }
   state.partial = '';
   renderTranscript();
@@ -848,6 +1152,77 @@ async function initAudio(){
   mute.connect(state.audioCtx.destination);
 }
 
+/* ---------- Web Speech (parallel recognizer) ----------
+   We run webkitSpeechRecognition alongside Vosk. The browser opens its own
+   independent getUserMedia session internally — no conflict with the Vosk
+   audio pipeline. When Web Speech is producing results it authoritatively
+   drives the transcript; Vosk is suppressed. See commitUtterance()'s dedup
+   for the race where both engines commit the same utterance.              */
+function normalizeForDedup(s){
+  return (s||'').trim().toLowerCase().replace(/[.,!?;:"'`]+$/,'').replace(/\s+/g,' ');
+}
+function isRecentDuplicate(text){
+  const norm = normalizeForDedup(text);
+  if(!norm) return false;
+  const now = Date.now();
+  state.recentCommits = state.recentCommits.filter(c => now - c.at < COMMIT_DEDUP_MS);
+  return state.recentCommits.some(c => c.text === norm);
+}
+function markCommitted(text){
+  const norm = normalizeForDedup(text);
+  if(!norm) return;
+  state.recentCommits.push({text: norm, at: Date.now()});
+}
+
+function initWebSpeech(){
+  if(!state.webSpeechSupported) return null;
+  const rec = new SR_CTOR();
+  rec.continuous = true;
+  rec.interimResults = true;
+  rec.maxAlternatives = 1;
+  rec.lang = 'en-US';
+
+  rec.onresult = (e) => {
+    state.lastWebSpeechAt = Date.now();
+    if(!state.webSpeechHealthy){
+      state.webSpeechHealthy = true;
+      setEngineStatus(getBackendLabel(), 'ready');
+    }
+    // Walk only the new results this event delivered
+    let partial = '';
+    for(let i = e.resultIndex; i < e.results.length; i++){
+      const r = e.results[i];
+      const text = (r[0]?.transcript || '').trim();
+      if(!text) continue;
+      if(r.isFinal){
+        commitUtterance(text, 'webspeech');
+      } else {
+        partial = text;
+      }
+    }
+    if(partial){
+      state.partial = applyCustomDictionary(partial);
+      renderTranscript();
+    }
+  };
+
+  rec.onerror = (e) => {
+    // 'no-speech' / 'aborted' are routine — don't demote health for those
+    if(e.error === 'no-speech' || e.error === 'aborted') return;
+    state.webSpeechHealthy = false;
+    if(state.running) setEngineStatus(getBackendLabel(), 'ready');
+  };
+
+  rec.onend = () => {
+    // Browsers auto-stop Web Speech after ~60s of silence; restart to stay continuous
+    if(state.running && state.webSpeechSupported){
+      try { rec.start(); } catch {}
+    }
+  };
+
+  return rec;
+}
+
 /* ---------- Recognizer ---------- */
 async function loadModel(onProgress){
   if(state.modelLoaded) return;
@@ -859,7 +1234,7 @@ async function loadModel(onProgress){
   try{
     // createModel streams/untars the .tar.gz model inside a Web Worker and persists it
     // to the browser's virtual filesystem (IndexedDB-backed). Subsequent calls hit cache.
-    onProgress?.(30, 'Downloading ~40 MB model (one-time)…');
+    onProgress?.(30, 'Downloading ~128 MB model (one-time)…');
     state.model = await Vosk.createModel(MODEL_URL);
     onProgress?.(90, 'Initializing recognizer…');
     state.modelLoaded = true;
@@ -894,11 +1269,18 @@ async function rebuildRecognizer(){
 
     state.recognizer.on('result', (m) => {
       const text = m.result?.text || '';
-      if(text) commitUtterance(text);
+      if(!text) return;
+      // Suppress Vosk when Web Speech is actively producing results.
+      // Fall through to commit only when Web Speech is unhealthy or has gone stale.
+      const webSpeechStale = Date.now() - state.lastWebSpeechAt > WEB_SPEECH_STALE_MS;
+      if(state.webSpeechHealthy && !webSpeechStale) return;
+      commitUtterance(text, 'vosk');
     });
     state.recognizer.on('partialresult', (m) => {
       const text = m.result?.partial || '';
-      // Fuzzy-correct partials live so the user sees their custom words during dictation
+      // Same gating as finals — let Web Speech drive the partial display when it's healthy
+      const webSpeechStale = Date.now() - state.lastWebSpeechAt > WEB_SPEECH_STALE_MS;
+      if(state.webSpeechHealthy && !webSpeechStale) return;
       state.partial = applyCustomDictionary(text);
       renderTranscript();
     });
@@ -994,6 +1376,28 @@ async function startDictation(){
     setStatus('Listening… speak naturally. Say "stop dictation" to stop.');
     $('#btnStart').disabled = true;
     $('#btnStop').disabled = false;
+
+    // Kick off the parallel Web Speech recognizer unless the user has opted into
+    // offline-only mode (no cloud). Mark healthy optimistically so Vosk stays
+    // suppressed during the ~1s warm-up; if Web Speech never produces a result
+    // within WEB_SPEECH_STALE_MS, staleness flips Vosk back on. onerror will
+    // demote healthy=false early if the engine fails outright.
+    state.recentCommits = [];
+    if(state.webSpeechSupported && !state.offlineMode){
+      state.webSpeechHealthy = true;
+      state.lastWebSpeechAt = Date.now();
+      state.webSpeech = state.webSpeech || initWebSpeech();
+      try { state.webSpeech.start(); } catch(err){
+        // InvalidStateError happens if .start() is called while already running
+        // (e.g. after an onend auto-restart). Safe to ignore.
+        if(err?.name !== 'InvalidStateError') console.warn('webSpeech.start()', err);
+      }
+    } else {
+      state.webSpeechHealthy = false;
+      state.lastWebSpeechAt = 0;
+    }
+    setEngineStatus(getBackendLabel(), 'ready');
+
     renderTranscript();
   }catch(err){
     console.error(err);
@@ -1007,6 +1411,7 @@ function stopDictation(){
   state.running = false;
   setMicStatus('Mic off', '');
   setStatus('Stopped.');
+  if(state.modelLoaded) setEngineStatus('Engine ready', 'ready');
   $('#btnStart').disabled = false;
   $('#btnStop').disabled = true;
   $('#meter').style.width = '0%';
@@ -1017,6 +1422,11 @@ function stopDictation(){
       state.recognizer.retrieveFinalResult?.();
     }catch{}
   }
+  // Stop Web Speech. onend fires but won't restart because state.running is false.
+  if(state.webSpeech){
+    try { state.webSpeech.stop(); } catch {}
+  }
+  state.webSpeechHealthy = false;
   state.partial = '';
   renderTranscript();
 }
@@ -1210,6 +1620,27 @@ $('#btnClear').addEventListener('click', doClear);
 $('#btnDownload').addEventListener('click', doDownload);
 $('#btnClearAll').addEventListener('click', clearAllData);
 
+$('#chkOfflineMode').addEventListener('change', async (e) => {
+  state.offlineMode = !!e.target.checked;
+  try { await dbPut('settings', {key:'offlineMode', value: state.offlineMode}); } catch {}
+  // Apply immediately. If dictation is running, stop/start Web Speech to match.
+  if(state.running){
+    if(state.offlineMode && state.webSpeech){
+      try { state.webSpeech.stop(); } catch {}
+      state.webSpeechHealthy = false;
+    } else if(!state.offlineMode && state.webSpeechSupported){
+      state.webSpeech = state.webSpeech || initWebSpeech();
+      state.webSpeechHealthy = true;
+      state.lastWebSpeechAt = Date.now();
+      try { state.webSpeech.start(); } catch(err){
+        if(err?.name !== 'InvalidStateError') console.warn('webSpeech.start()', err);
+      }
+    }
+    setEngineStatus(getBackendLabel(), 'ready');
+  }
+  toast(state.offlineMode ? 'Offline-only mode enabled' : 'Dual-engine mode enabled');
+});
+
 /* ---------- Reset / clear all local data ---------- */
 async function clearAllData(){
   const ok = confirm(
@@ -1217,7 +1648,7 @@ async function clearAllData(){
     '  • Custom dictionary\n' +
     '  • Macros\n' +
     '  • Saved transcript\n' +
-    '  • Cached ~40 MB speech model\n\n' +
+    '  • Cached ~128 MB speech model\n\n' +
     'The page will reload. Continue?'
   );
   if(!ok) return;
@@ -1275,6 +1706,18 @@ async function clearAllData(){
 
 /* Keyboard shortcuts */
 function keyHandler(e){
+  // Global shortcuts — fire regardless of focus (including in the pad).
+  if((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key.toLowerCase() === 'm' || e.code === 'KeyM')){
+    e.preventDefault();
+    state.running ? stopDictation() : startDictation();
+    return;
+  }
+  if(e.key === 'Escape' && state.running){
+    e.preventDefault();
+    stopDictation();
+    return;
+  }
+  // Focus-restricted shortcuts below
   if(e.target.matches('input,textarea,[contenteditable="true"]')) return;
   if(e.code === 'Space'){
     e.preventDefault();
@@ -1380,6 +1823,13 @@ $('#btnSkipModel').addEventListener('click', ()=>{ $('#setupModal').style.displa
   try{
     const prior = await dbGet('settings', 'transcript');
     if(prior?.value){ state.transcript = prior.value; renderTranscript(); }
+  }catch{}
+  // Restore offline-mode preference
+  try{
+    const om = await dbGet('settings', 'offlineMode');
+    state.offlineMode = !!om?.value;
+    const chk = $('#chkOfflineMode');
+    if(chk) chk.checked = state.offlineMode;
   }catch{}
   await refreshDict();
   await refreshMacros();
