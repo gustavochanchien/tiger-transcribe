@@ -554,16 +554,16 @@ textarea.input{font-family:var(--serif);font-size:15px;line-height:1.6;min-heigh
    Single-file build. Uses vosk-browser (UMD) for in-browser Vosk.
    ========================================================= */
 
-// alphacephei ships .zip but vosk-browser@0.0.8 only accepts .tar.gz. Re-pack via:
-//   unzip vosk-model-en-us-0.22-lgraph.zip && tar -czf vosk-model.tar.gz vosk-model-en-us-0.22-lgraph/
-// Then split into <100 MB parts so git will accept them:
-//   split -b 62m vosk-model.tar.gz vosk-model.tar.gz.part-
-// Files are served same-origin via GitHub Pages — no CORS dance.
-const MODEL_CHUNK_URLS = [
-  'models/vosk-model.tar.gz.part-aa',
-  'models/vosk-model.tar.gz.part-ab',
-  'models/vosk-model.tar.gz.part-ac',
-];
+// Small English model (~40 MB). We use the small model — the big lgraph model
+// cannot keep up with real-time dictation in the browser, so speech lags behind
+// by many seconds. Weird-word accuracy (drug names etc.) is handled by the
+// custom-dictionary post-processor (applyCustomDictionary), not the model.
+//
+// alphacephei ships .zip but vosk-browser@0.0.8 only accepts .tar.gz. Re-pack:
+//   unzip vosk-model-small-en-us-0.15.zip
+//   tar -czf models/vosk-model-small-en-us-0.15.tar.gz vosk-model-small-en-us-0.15/
+// Served same-origin via GitHub Pages — no CORS dance.
+const MODEL_URL = 'models/vosk-model-small-en-us-0.15.tar.gz';
 
 /* ---------- Tiny IndexedDB helper (no Dexie) ---------- */
 const DB_NAME = 'tiger-transcribe';
@@ -770,6 +770,18 @@ function renderTranscript(){
 }
 function escapeHTML(s){
   return (s||'').replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+
+/* rAF-coalesced render for partialresult events. Vosk fires partials faster
+   than 60 Hz; rewriting innerHTML on every one starves the audio thread and
+   makes speech lag behind. One render per frame is plenty for a live caret. */
+let _renderRAF = 0;
+function schedulePartialRender(){
+  if(_renderRAF) return;
+  _renderRAF = requestAnimationFrame(() => {
+    _renderRAF = 0;
+    renderTranscript();
+  });
 }
 
 /* Today's date as MM/DD/YYYY (e.g. "04/18/2026") */
@@ -1112,38 +1124,34 @@ async function loadModel(onProgress){
   setEngineStatus('Downloading model…', '');
   onProgress?.(2, 'Connecting…');
   try{
-    // Fetch each split part in parallel, stream byte progress, then concatenate
-    // into one Blob URL for Vosk. Vosk has no progress callback of its own.
-    const responses = await Promise.all(MODEL_CHUNK_URLS.map(u => fetch(u)));
-    responses.forEach((r, i) => {
-      if(!r.ok) throw new Error(`HTTP ${r.status} fetching ${MODEL_CHUNK_URLS[i]}`);
-    });
+    // Stream the tarball so we can show byte progress — Vosk has no progress
+    // callback of its own. Concat chunks into a Blob URL and hand that to Vosk.
+    const resp = await fetch(MODEL_URL);
+    if(!resp.ok) throw new Error(`HTTP ${resp.status} fetching ${MODEL_URL}`);
 
-    const total = responses.reduce((s, r) => s + (Number(r.headers.get('content-length')) || 0), 0);
-    const totalMB = total ? (total / 1048576).toFixed(0) : '~124';
-    const partBuffers = responses.map(() => []);
+    const total = Number(resp.headers.get('content-length')) || 0;
+    const totalMB = total ? (total / 1048576).toFixed(0) : '~40';
+    const chunks = [];
     let received = 0;
 
-    await Promise.all(responses.map(async (resp, i) => {
-      if(!resp.body){
-        const buf = await resp.arrayBuffer();
-        partBuffers[i].push(new Uint8Array(buf));
-        received += buf.byteLength;
-        return;
-      }
+    if(resp.body){
       const reader = resp.body.getReader();
       while(true){
         const {done, value} = await reader.read();
         if(done) break;
-        partBuffers[i].push(value);
+        chunks.push(value);
         received += value.length;
         const pct = total ? Math.round(5 + (received / total) * 73) : 30;
         const mb = (received / 1048576).toFixed(1);
         onProgress?.(pct, `Downloading… ${mb} / ${totalMB} MB`);
       }
-    }));
+    } else {
+      const buf = await resp.arrayBuffer();
+      chunks.push(new Uint8Array(buf));
+      received = buf.byteLength;
+    }
 
-    const modelUrl = URL.createObjectURL(new Blob(partBuffers.flat()));
+    const modelUrl = URL.createObjectURL(new Blob(chunks));
 
     onProgress?.(80, 'Decompressing and caching…');
     state.model = await Vosk.createModel(modelUrl);
@@ -1186,9 +1194,12 @@ async function rebuildRecognizer(){
       commitUtterance(text);
     });
     state.recognizer.on('partialresult', (m) => {
-      const text = m.result?.partial || '';
-      state.partial = applyCustomDictionary(text);
-      renderTranscript();
+      // Partials fire many times per second. We skip the Levenshtein dictionary
+      // sweep here (it runs on the final `result` event instead) and coalesce
+      // DOM updates to one per animation frame — both keep the main thread free
+      // so ScriptProcessorNode can keep feeding audio to the recognizer.
+      state.partial = m.result?.partial || '';
+      schedulePartialRender();
     });
   }catch(err){
     console.error('Recognizer init failed', err);
